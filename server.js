@@ -1,0 +1,406 @@
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { Client } = require('pg');
+const path = require('path');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'fitfelipe-dev-secret';
+const databaseUrl = process.env.DATABASE_URL;
+
+const demoUsers = [];
+const demoDiary = {};
+
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.static(path.join(__dirname)));
+
+let pgClient = null;
+
+async function connectDatabase() {
+  if (!databaseUrl) {
+    return null;
+  }
+
+  if (!pgClient) {
+    pgClient = new Client({
+      connectionString: databaseUrl,
+      ssl: { rejectUnauthorized: false }
+    });
+
+    await pgClient.connect();
+    await pgClient.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS diary_entries (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        date DATE NOT NULL,
+        food TEXT NOT NULL,
+        kcal_consumed INTEGER NOT NULL,
+        minutes_walked INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+  }
+
+  return pgClient;
+}
+
+function signToken(user) {
+  return jwt.sign(
+    { sub: user.id, email: user.email, name: user.name },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+}
+
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ message: 'Token no encontrado' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Sesión no válida o expirada' });
+  }
+}
+
+async function getUserByEmail(email) {
+  const client = await connectDatabase();
+
+  if (!client) {
+    const found = demoUsers.find(user => user.email.toLowerCase() === String(email).toLowerCase());
+    return found || null;
+  }
+
+  const result = await client.query(
+    'SELECT id, name, email, password_hash FROM users WHERE email = $1',
+    [String(email).toLowerCase()]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function createUser({ name, email, password }) {
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const trimmedName = String(name).trim();
+
+  // Validación de campos vacíos
+  if (!trimmedName) {
+    throw new Error('El nombre no puede estar vacío');
+  }
+  if (!normalizedEmail) {
+    throw new Error('El email no puede estar vacío');
+  }
+  if (!password) {
+    throw new Error('La contraseña no puede estar vacía');
+  }
+
+  // Validación de email formato
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(normalizedEmail)) {
+    throw new Error('Por favor ingresa un email válido');
+  }
+
+  // Validación de contraseña
+  if (password.length < 6) {
+    throw new Error('La contraseña debe tener al menos 6 caracteres');
+  }
+  if (password.length > 128) {
+    throw new Error('La contraseña es demasiado larga (máximo 128 caracteres)');
+  }
+
+  // Validación de nombre
+  if (trimmedName.length < 2) {
+    throw new Error('El nombre debe tener al menos 2 caracteres');
+  }
+  if (trimmedName.length > 100) {
+    throw new Error('El nombre es demasiado largo (máximo 100 caracteres)');
+  }
+
+  const client = await connectDatabase();
+
+  if (!client) {
+    const existing = demoUsers.find(user => user.email.toLowerCase() === normalizedEmail);
+    if (existing) {
+      throw new Error('Ya existe una cuenta con ese email');
+    }
+
+    const user = {
+      id: `demo-${Date.now()}`,
+      name: trimmedName,
+      email: normalizedEmail,
+      password_hash: await bcrypt.hash(password, 10)
+    };
+
+    demoUsers.push(user);
+    console.log(`[DEMO] Usuario creado: ${normalizedEmail}`);
+    return user;
+  }
+
+  try {
+    const existing = await client.query('SELECT 1 FROM users WHERE email = $1', [normalizedEmail]);
+    if (existing.rowCount > 0) {
+      throw new Error('Ya existe una cuenta con ese email');
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const result = await client.query(
+      'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email',
+      [trimmedName, normalizedEmail, passwordHash]
+    );
+
+    console.log(`[DB] Usuario creado: ${normalizedEmail} (ID: ${result.rows[0].id})`);
+    return result.rows[0];
+  } catch (error) {
+    if (error.code === '23505') {
+      throw new Error('Ya existe una cuenta con ese email');
+    }
+    throw new Error(`Error al crear la cuenta: ${error.message}`);
+  }
+}
+
+async function getDiaryByUser(userId) {
+  const client = await connectDatabase();
+
+  if (!client) {
+    return demoDiary[userId] || [];
+  }
+
+  const result = await client.query(
+    `SELECT id, date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"
+     FROM diary_entries
+     WHERE user_id = $1
+     ORDER BY date DESC, created_at DESC`,
+    [userId]
+  );
+
+  return result.rows.map(row => ({
+    id: row.id,
+    date: String(row.date).slice(0, 10),
+    food: row.food,
+    kcalConsumed: Number(row.kcalConsumed),
+    minutes: Number(row.minutes)
+  }));
+}
+
+async function addDiaryEntry(userId, payload) {
+  const client = await connectDatabase();
+  const { date, food, kcalConsumed, minutes } = payload;
+
+  if (!date || !food || Number(kcalConsumed) < 0 || Number(minutes) < 0) {
+    throw new Error('La fecha, comida y calorías son requeridas');
+  }
+
+  if (!client) {
+    const entry = {
+      id: `demo-entry-${Date.now()}`,
+      date: String(date),
+      food: String(food),
+      kcalConsumed: Number(kcalConsumed),
+      minutes: Number(minutes) || 0
+    };
+
+    if (!demoDiary[userId]) demoDiary[userId] = [];
+    demoDiary[userId].unshift(entry);
+    return entry;
+  }
+
+  const result = await client.query(
+    `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
+    [userId, String(date), String(food), Number(kcalConsumed), Number(minutes) || 0]
+  );
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    date: String(row.date).slice(0, 10),
+    food: row.food,
+    kcalConsumed: Number(row.kcalConsumed),
+    minutes: Number(row.minutes)
+  };
+}
+
+async function deleteDiaryEntry(userId, entryId) {
+  const client = await connectDatabase();
+
+  if (!client) {
+    if (!demoDiary[userId]) return;
+    demoDiary[userId] = demoDiary[userId].filter(item => item.id !== entryId);
+    return;
+  }
+
+  await client.query('DELETE FROM diary_entries WHERE id = $1 AND user_id = $2', [entryId, userId]);
+}
+
+app.get('/api/health', async (req, res) => {
+  try {
+    await connectDatabase();
+    return res.json({
+      ok: true,
+      database: databaseUrl ? 'Neon/Postgres ready' : 'demo mode',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Error al verificar la base de datos', error: error.message });
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body || {};
+    
+    if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ message: 'Nombre, email y contraseña deben ser texto' });
+    }
+
+    const user = await createUser({ name, email, password });
+    const token = signToken(user);
+
+    return res.status(201).json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email
+      },
+      message: 'Cuenta creada exitosamente'
+    });
+  } catch (error) {
+    console.error('[REGISTRO ERROR]', error.message);
+    return res.status(400).json({ message: error.message || 'No se pudo crear la cuenta' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email y contraseña son requeridos' });
+    }
+
+    const user = await getUserByEmail(email);
+    if (!user) {
+      return res.status(401).json({ message: 'Credenciales inválidas' });
+    }
+
+    const client = await connectDatabase();
+    const isDemoUser = !client;
+    const validPassword = isDemoUser
+      ? await bcrypt.compare(password, user.password_hash)
+      : await bcrypt.compare(password, user.password_hash);
+
+    if (!validPassword) {
+      return res.status(401).json({ message: 'Credenciales inválidas' });
+    }
+
+    const token = signToken({
+      id: user.id,
+      name: user.name,
+      email: user.email
+    });
+
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Error al iniciar sesión', error: error.message });
+  }
+});
+
+app.get('/api/me', authMiddleware, async (req, res) => {
+  try {
+    const client = await connectDatabase();
+
+    if (!client) {
+      const user = demoUsers.find(item => item.id === req.user.sub);
+      if (!user) {
+        return res.status(404).json({ message: 'Usuario no encontrado' });
+      }
+
+      return res.json({
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email
+        }
+      });
+    }
+
+    const result = await client.query(
+      'SELECT id, name, email FROM users WHERE id = $1',
+      [req.user.sub]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+
+    res.json({ user: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al cargar perfil', error: error.message });
+  }
+});
+
+app.get('/api/diary', authMiddleware, async (req, res) => {
+  try {
+    const entries = await getDiaryByUser(req.user.sub);
+    return res.json(entries);
+  } catch (error) {
+    return res.status(500).json({ message: 'Error al obtener el registro', error: error.message });
+  }
+});
+
+app.post('/api/diary', authMiddleware, async (req, res) => {
+  try {
+    const entry = await addDiaryEntry(req.user.sub, req.body || {});
+    return res.status(201).json(entry);
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'No se pudo guardar el día' });
+  }
+});
+
+app.delete('/api/diary/:id', authMiddleware, async (req, res) => {
+  try {
+    await deleteDiaryEntry(req.user.sub, req.params.id);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ message: 'No se pudo eliminar el registro', error: error.message });
+  }
+});
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`FitFelipe ready on http://localhost:${PORT}`);
+  console.log(`Base de datos: ${databaseUrl ? 'Neon/Postgres configured' : 'demo mode (fallback local)'}`);
+});
