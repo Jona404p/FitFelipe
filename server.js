@@ -187,7 +187,7 @@ async function getDiaryByUser(userId) {
   }
 
   const result = await client.query(
-    `SELECT id, date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"
+    `SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"
      FROM diary_entries
      WHERE user_id = $1
      ORDER BY date DESC, created_at DESC`,
@@ -196,7 +196,7 @@ async function getDiaryByUser(userId) {
 
   return result.rows.map(row => ({
     id: row.id,
-    date: String(row.date).slice(0, 10),
+    date: row.date,
     food: row.food,
     kcalConsumed: Number(row.kcalConsumed),
     minutes: Number(row.minutes)
@@ -228,14 +228,64 @@ async function addDiaryEntry(userId, payload) {
   const result = await client.query(
     `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
      VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
+     RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
     [userId, String(date), String(food), Number(kcalConsumed), Number(minutes) || 0]
   );
 
   const row = result.rows[0];
   return {
     id: row.id,
-    date: String(row.date).slice(0, 10),
+    date: row.date,
+    food: row.food,
+    kcalConsumed: Number(row.kcalConsumed),
+    minutes: Number(row.minutes)
+  };
+}
+
+async function updateDiaryEntry(userId, entryId, payload) {
+  const client = await connectDatabase();
+  const { date, food, kcalConsumed, minutes } = payload || {};
+
+  if (!date || !food || Number(kcalConsumed) < 0 || Number(minutes) < 0) {
+    throw new Error('La fecha, comida y calorías son requeridas');
+  }
+
+  if (!client) {
+    const diary = demoDiary[userId] || [];
+    const index = diary.findIndex(item => item.id === entryId);
+
+    if (index === -1) {
+      throw new Error('No se encontró el registro a actualizar');
+    }
+
+    diary[index] = {
+      ...diary[index],
+      date: String(date),
+      food: String(food),
+      kcalConsumed: Number(kcalConsumed),
+      minutes: Number(minutes) || 0
+    };
+
+    demoDiary[userId] = diary;
+    return diary[index];
+  }
+
+  const result = await client.query(
+    `UPDATE diary_entries
+     SET date = $1, food = $2, kcal_consumed = $3, minutes_walked = $4
+     WHERE id = $5 AND user_id = $6
+     RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
+    [String(date), String(food), Number(kcalConsumed), Number(minutes) || 0, entryId, userId]
+  );
+
+  if (result.rowCount === 0) {
+    throw new Error('No se encontró el registro a actualizar');
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    date: row.date,
     food: row.food,
     kcalConsumed: Number(row.kcalConsumed),
     minutes: Number(row.minutes)
@@ -384,6 +434,15 @@ app.post('/api/diary', authMiddleware, async (req, res) => {
     return res.status(201).json(entry);
   } catch (error) {
     return res.status(400).json({ message: error.message || 'No se pudo guardar el día' });
+  }
+});
+
+app.put('/api/diary/:id', authMiddleware, async (req, res) => {
+  try {
+    const updated = await updateDiaryEntry(req.user.sub, req.params.id, req.body || {});
+    return res.json(updated);
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'No se pudo actualizar el registro', error: error.message });
   }
 });
 

@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
     <title>Calculadora y Registro de Calorías</title>
     <!-- PWA Meta Tags -->
     <meta name="theme-color" content="#ef4444">
@@ -52,17 +52,26 @@
         })();
     </script>
     <style>
-        html { color-scheme: light; }
+        html { color-scheme: light; -webkit-text-size-adjust: 100%; }
         html.dark { color-scheme: dark; }
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f8fafc !important;
             color: #1e293b !important;
             transition: background-color 300ms ease, color 300ms ease;
+            -webkit-text-size-adjust: 100%;
+            text-rendering: optimizeLegibility;
         }
         html.dark body {
             background-color: #0f172a !important;
             color: #f1f5f9 !important;
+        }
+        input, select, button, textarea {
+            font-size: 16px;
+        }
+        button, a {
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
         }
         .tab-active {
             border-color: #16a34a;
@@ -454,9 +463,12 @@
                     </div>
 
                     <!-- Botón Guardar -->
-                    <div class="md:col-span-2">
-                        <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600 text-white font-bold py-2.5 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5">
+                    <div class="md:col-span-2 flex gap-2">
+                        <button type="submit" id="saveDayBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600 text-white font-bold py-2.5 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5">
                             <i data-lucide="plus-circle" class="w-4 h-4"></i> Guardar Día
+                        </button>
+                        <button type="button" id="cancelEditDayBtn" class="hidden flex-1 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold py-2.5 px-4 rounded-xl shadow-sm transition-all">
+                            Cancelar
                         </button>
                     </div>
                 </form>
@@ -898,11 +910,11 @@
                     : 'bg-amber-50 text-amber-700 border border-amber-200';
 
                 return `
-                    <tr class="hover:bg-slate-50/80 transition-colors">
+                    <tr class="hover:bg-slate-50/80 transition-colors" data-diary-entry-id="${item.id}">
                         <td class="py-3 px-2 text-center font-bold text-slate-400">${dayNumber}</td>
                         <td class="py-3 px-3 font-semibold text-slate-800 whitespace-nowrap">${item.date}</td>
                         <td class="py-3 px-3 font-medium text-slate-700 max-w-xs truncate" title="${item.food}">${item.food}</td>
-                        <td class="py-3 px-3 text-right font-black text-slate-900">${formatNumber(item.kcalConsumed)} kcal</td>
+                        <td class="py-3 px-3 text-right font-black text-slate-900 cursor-pointer hover:bg-emerald-50 rounded transition-colors inline-edit-kcal" data-kcal="${item.kcalConsumed}" title="Doble clic para editar">${formatNumber(item.kcalConsumed)} kcal</td>
                         <td class="py-3 px-3 text-center">
                             <span class="inline-flex items-center gap-1 font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md text-[11px]">
                                 <i data-lucide="footprints" class="w-3 h-3 text-emerald-600"></i> ${item.minutes} min
@@ -917,14 +929,20 @@
                             </span>
                         </td>
                         <td class="py-3 px-2 text-center">
-                            <button onclick="deleteDiaryItem(${item.id})" title="Eliminar fila" class="text-slate-300 hover:text-rose-600 transition-colors p-1">
-                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                            </button>
+                            <div class="flex items-center justify-center gap-1.5">
+                                <button type="button" data-diary-action="edit" data-diary-id="${item.id}" title="Editar fila" class="text-slate-400 hover:text-emerald-600 transition-colors p-1">
+                                    <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                                </button>
+                                <button type="button" data-diary-action="delete" data-diary-id="${item.id}" title="Eliminar fila" class="text-slate-300 hover:text-rose-600 transition-colors p-1">
+                                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
                         </td>
                     </tr>
                 `;
             }).join('');
 
+            attachDiaryTableListeners();
             updateDiarySummary(state.diary.length, totalDeficit);
             lucide.createIcons();
         }
@@ -942,6 +960,98 @@
             }
         }
 
+        function attachDiaryTableListeners() {
+            document.querySelectorAll('.inline-edit-kcal').forEach(cell => {
+                cell.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    startInlineEdit(cell);
+                });
+            });
+        }
+
+        function startInlineEdit(cell) {
+            const originalValue = cell.getAttribute('data-kcal');
+            const tr = cell.closest('tr');
+            const entryId = tr.getAttribute('data-diary-entry-id');
+
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.value = originalValue;
+            input.min = '0';
+            input.max = '10000';
+            input.className = 'w-20 bg-white dark:bg-slate-700 border-2 border-emerald-500 rounded px-2 py-1 font-black text-slate-900 dark:text-white focus:outline-none text-right';
+
+            const saveEdit = async () => {
+                const newValue = parseInt(input.value) || 0;
+                if (newValue <= 0) {
+                    cell.textContent = formatNumber(originalValue) + ' kcal';
+                    return;
+                }
+
+                try {
+                    const entry = state.diary.find(item => String(item.id) === String(entryId));
+                    if (!entry) return;
+
+                    const updated = await apiFetch(`/api/diary/${entryId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({
+                            date: entry.date,
+                            food: entry.food,
+                            kcalConsumed: newValue,
+                            minutes: entry.minutes
+                        })
+                    });
+
+                    state.diary = state.diary.map(item => item.id === entryId ? { ...item, kcalConsumed: newValue } : item);
+                    cell.setAttribute('data-kcal', newValue);
+                    cell.textContent = formatNumber(newValue) + ' kcal';
+                    renderDiaryTable();
+                } catch (error) {
+                    alert('Error al guardar: ' + error.message);
+                    cell.textContent = formatNumber(originalValue) + ' kcal';
+                }
+            };
+
+            cell.textContent = '';
+            cell.appendChild(input);
+            input.focus();
+            input.select();
+
+            input.addEventListener('blur', saveEdit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    saveEdit();
+                } else if (e.key === 'Escape') {
+                    cell.textContent = formatNumber(originalValue) + ' kcal';
+                }
+            });
+        }
+
+        function resetDiaryForm() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('formDate').value = today;
+            document.getElementById('formFood').value = '';
+            document.getElementById('formKcal').value = '';
+            document.getElementById('formMinutes').value = '0';
+            document.getElementById('saveDayBtn').innerHTML = '<i data-lucide="plus-circle" class="w-4 h-4"></i> Guardar Día';
+            document.getElementById('cancelEditDayBtn').classList.add('hidden');
+            state.editingDiaryId = null;
+            lucide.createIcons();
+        }
+
+        function startEditDiaryItem(entry) {
+            if (!entry) return;
+            state.editingDiaryId = entry.id;
+            document.getElementById('formDate').value = entry.date || '';
+            document.getElementById('formFood').value = entry.food || '';
+            document.getElementById('formKcal').value = entry.kcalConsumed ?? 0;
+            document.getElementById('formMinutes').value = entry.minutes ?? 0;
+            document.getElementById('saveDayBtn').innerHTML = '<i data-lucide="pencil" class="w-4 h-4"></i> Actualizar Día';
+            document.getElementById('cancelEditDayBtn').classList.remove('hidden');
+            lucide.createIcons();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
         async function handleAddNewDay(e) {
             e.preventDefault();
             const date = document.getElementById('formDate').value;
@@ -954,15 +1064,25 @@
             }
 
             try {
-                const newEntry = await apiFetch('/api/diary', {
-                    method: 'POST',
-                    body: JSON.stringify({ date, food, kcalConsumed: kcal, minutes })
-                });
+                const payload = { date, food, kcalConsumed: kcal, minutes };
 
-                state.diary.unshift(newEntry);
-                document.getElementById('formFood').value = '';
-                document.getElementById('formKcal').value = '';
-                document.getElementById('formMinutes').value = '0';
+                if (state.editingDiaryId) {
+                    const updatedEntry = await apiFetch(`/api/diary/${state.editingDiaryId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify(payload)
+                    });
+
+                    state.diary = state.diary.map(item => item.id === state.editingDiaryId ? { ...item, ...updatedEntry } : item);
+                } else {
+                    const newEntry = await apiFetch('/api/diary', {
+                        method: 'POST',
+                        body: JSON.stringify(payload)
+                    });
+
+                    state.diary.unshift(newEntry);
+                }
+
+                resetDiaryForm();
                 renderDiaryTable();
             } catch (error) {
                 alert(error.message);
@@ -973,11 +1093,34 @@
             try {
                 await apiFetch(`/api/diary/${id}`, { method: 'DELETE' });
                 state.diary = state.diary.filter(item => item.id !== id);
+                if (state.editingDiaryId === id) {
+                    resetDiaryForm();
+                }
                 renderDiaryTable();
             } catch (error) {
                 alert(error.message);
             }
         }
+
+        document.addEventListener('click', (event) => {
+            const actionButton = event.target.closest('[data-diary-action]');
+            if (!actionButton) return;
+
+            const action = actionButton.getAttribute('data-diary-action');
+            const id = actionButton.getAttribute('data-diary-id');
+
+            if (action === 'delete') {
+                deleteDiaryItem(id);
+                return;
+            }
+
+            if (action === 'edit') {
+                const entry = state.diary.find(item => String(item.id) === String(id));
+                startEditDiaryItem(entry);
+            }
+        });
+
+        document.getElementById('cancelEditDayBtn')?.addEventListener('click', resetDiaryForm);
 
         async function clearAllDiary() {
             if (!state.diary.length) return;

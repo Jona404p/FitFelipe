@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS diary_entries (
   date DATE NOT NULL,
   food TEXT NOT NULL,
   kcal_consumed INTEGER NOT NULL,
-  minutes INTEGER NOT NULL DEFAULT 0,
+  minutes_walked INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
