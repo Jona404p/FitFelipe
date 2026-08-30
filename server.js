@@ -554,11 +554,22 @@ async function deleteDiaryEntry(userId, entryId) {
 
   if (!client) {
     if (!demoDiary[userId]) return;
+    const before = demoDiary[userId].length;
     demoDiary[userId] = demoDiary[userId].filter(item => item.id !== entryId);
+    if (demoDiary[userId].length === before) {
+      throw new Error('No se encontró el registro a eliminar');
+    }
     return;
   }
 
-  await client.query('DELETE FROM diary_entries WHERE id = $1 AND user_id = $2', [entryId, userId]);
+  const result = await client.query(
+    'DELETE FROM diary_entries WHERE id = $1 AND user_id = $2 RETURNING id',
+    [entryId, userId]
+  );
+
+  if (result.rowCount === 0) {
+    throw new Error('No se encontró el registro a eliminar');
+  }
 }
 
 app.get('/api/health', async (req, res) => {
@@ -731,7 +742,8 @@ app.delete('/api/diary/:id', authMiddleware, async (req, res) => {
     await deleteDiaryEntry(req.user.sub, req.params.id);
     return res.json({ ok: true });
   } catch (error) {
-    return res.status(500).json({ message: 'No se pudo eliminar el registro', error: error.message });
+    const status = error.message?.includes('No se encontró') ? 404 : 500;
+    return res.status(status).json({ message: error.message || 'No se pudo eliminar el registro', error: error.message });
   }
 });
 

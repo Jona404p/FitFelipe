@@ -1210,15 +1210,40 @@
         }
 
         async function deleteDiaryItem(id) {
+            const entryId = String(id || '').trim();
+            if (!entryId) return;
+
+            const entry = state.diary.find(item => String(item.id) === entryId);
+            const confirmText = entry
+                ? `¿Quieres eliminar el registro de ${entry.food} del ${entry.date}?`
+                : '¿Quieres eliminar este registro?';
+
+            if (!window.confirm(confirmText)) return;
+
+            const deleteButtons = document.querySelectorAll('[data-diary-action="delete"]');
+            deleteButtons.forEach(button => {
+                if (String(button.getAttribute('data-diary-id')) === entryId) {
+                    button.disabled = true;
+                    button.classList.add('opacity-50', 'cursor-not-allowed');
+                }
+            });
+
             try {
-                await apiFetch(`/api/diary/${id}`, { method: 'DELETE' });
-                state.diary = state.diary.filter(item => item.id !== id);
-                if (state.editingDiaryId === id) {
+                await apiFetch(`/api/diary/${entryId}`, { method: 'DELETE' });
+                state.diary = state.diary.filter(item => String(item.id) !== entryId);
+                if (String(state.editingDiaryId) === entryId) {
                     resetDiaryForm();
                 }
                 renderDiaryTable();
             } catch (error) {
-                alert(error.message);
+                alert(error.message || 'No se pudo eliminar el registro.');
+            } finally {
+                deleteButtons.forEach(button => {
+                    if (String(button.getAttribute('data-diary-id')) === entryId) {
+                        button.disabled = false;
+                        button.classList.remove('opacity-50', 'cursor-not-allowed');
+                    }
+                });
             }
         }
 
