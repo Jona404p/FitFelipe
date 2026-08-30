@@ -7,7 +7,7 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number.parseInt(process.env.PORT, 10) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'fitfelipe-dev-secret';
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -34,6 +34,11 @@ async function connectDatabase() {
       pgClient = new Client({
         connectionString: databaseUrl,
         ssl: { rejectUnauthorized: false }
+      });
+
+      pgClient.on('error', (error) => {
+        console.warn('[DB] Conexión PostgreSQL terminada:', error.message);
+        pgClient = null;
       });
 
       await pgClient.connect();
@@ -323,8 +328,8 @@ async function getDiaryByUser(userId) {
 function normalizeDiaryPayload(payload = {}) {
   const rawDate = String(payload.date ?? '').trim();
   const rawFood = String(payload.food ?? '').trim();
-  const kcalConsumed = Number(payload.kcalConsumed);
-  const minutes = Number(payload.minutes ?? 0);
+  const kcalValue = Number(payload.kcalConsumed);
+  const minutesValue = Number(payload.minutes ?? 0);
 
   let date = rawDate;
   if (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
@@ -339,9 +344,19 @@ function normalizeDiaryPayload(payload = {}) {
   return {
     date,
     food: rawFood,
-    kcalConsumed,
-    minutes: Number.isFinite(minutes) ? minutes : 0
+    kcalConsumed: Number.isFinite(kcalValue) ? Math.round(kcalValue) : NaN,
+    minutes: Number.isFinite(minutesValue) ? Math.round(minutesValue) : NaN
   };
+}
+
+function isValidCalendarDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
 }
 
 async function addDiaryEntry(userId, payload) {
@@ -357,7 +372,7 @@ async function addDiaryEntry(userId, payload) {
     throw new Error('Los minutos deben ser un número válido mayor o igual que 0');
   }
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidCalendarDate(date)) {
     throw new Error('La fecha debe tener formato YYYY-MM-DD');
   }
 
@@ -405,7 +420,7 @@ async function updateDiaryEntry(userId, entryId, payload) {
     throw new Error('Los minutos deben ser un número válido mayor o igual que 0');
   }
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidCalendarDate(date)) {
     throw new Error('La fecha debe tener formato YYYY-MM-DD');
   }
 
