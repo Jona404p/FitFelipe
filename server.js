@@ -20,7 +20,15 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(path.join(__dirname), { index: false }));
+
+app.get('/tailwind.css', (req, res) => {
+  res.sendFile(path.join(__dirname, 'tailwind.css'));
+});
+
+app.get('/manifest.json', (req, res) => {
+  res.sendFile(path.join(__dirname, 'manifest.json'));
+});
 
 let pgClient = null;
 let databaseSetupPromise = null;
