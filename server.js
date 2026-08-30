@@ -23,28 +23,41 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
 let pgClient = null;
+let databaseSetupPromise = null;
+
+async function resetDatabaseConnection() {
+  const client = pgClient;
+  pgClient = null;
+  databaseSetupPromise = null;
+
+  if (client) {
+    await client.end().catch(() => {});
+  }
+}
 
 async function connectDatabase() {
   if (!databaseUrl) {
     return null;
   }
 
-  if (!pgClient) {
-    try {
-      pgClient = new Pool({
+  if (!pgClient && !databaseSetupPromise) {
+    databaseSetupPromise = (async () => {
+      let client;
+      try {
+        client = new Pool({
         connectionString: databaseUrl,
         ssl: { rejectUnauthorized: false },
         max: 2,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 10000
-      });
+        });
 
-      pgClient.on('error', (error) => {
-        console.warn('[DB] Error en el pool PostgreSQL:', error.message);
-      });
+        client.on('error', (error) => {
+          console.warn('[DB] Error en el pool PostgreSQL:', error.message);
+        });
 
-      await pgClient.query('CREATE EXTENSION IF NOT EXISTS pgcrypto;');
-      await pgClient.query(`
+        await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto;');
+        await client.query(`
         CREATE TABLE IF NOT EXISTS users (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           name TEXT NOT NULL,
@@ -73,16 +86,38 @@ async function connectDatabase() {
           activity_factor NUMERIC(4,3) NOT NULL DEFAULT 1.2,
           updated_at TIMESTAMPTZ DEFAULT NOW()
         );
-      `);
-    } catch (error) {
-      console.warn('[DB] No se pudo conectar a PostgreSQL, usando modo demo:', error.message);
-      if (pgClient) await pgClient.end().catch(() => {});
-      pgClient = null;
-      return null;
-    }
+        `);
+        pgClient = client;
+        return pgClient;
+      } catch (error) {
+        console.warn('[DB] No se pudo conectar a PostgreSQL:', error.message);
+        if (client) await client.end().catch(() => {});
+        return null;
+      }
+    })();
+  }
+
+  if (databaseSetupPromise) {
+    await databaseSetupPromise;
+    databaseSetupPromise = null;
   }
 
   return pgClient;
+}
+
+async function queryDatabase(text, values) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const client = await connectDatabase();
+    if (!client) throw new Error('La base de datos no está disponible. Inténtalo de nuevo.');
+
+    try {
+      return await client.query(text, values);
+    } catch (error) {
+      if (attempt === 1) throw error;
+      console.warn('[DB] Reintentando consulta después de un fallo:', error.message);
+      await resetDatabaseConnection();
+    }
+  }
 }
 
 function signToken(user) {
@@ -359,7 +394,6 @@ function isValidCalendarDate(date) {
 }
 
 async function addDiaryEntry(userId, payload) {
-  const client = await connectDatabase();
   const normalized = normalizeDiaryPayload(payload);
   const { date, food, kcalConsumed, minutes } = normalized;
 
@@ -373,6 +407,11 @@ async function addDiaryEntry(userId, payload) {
 
   if (!isValidCalendarDate(date)) {
     throw new Error('La fecha debe tener formato YYYY-MM-DD');
+  }
+
+  const client = await connectDatabase();
+  if (!client && databaseUrl) {
+    throw new Error('La base de datos no está disponible. Inténtalo de nuevo.');
   }
 
   if (!client) {
@@ -389,11 +428,7 @@ async function addDiaryEntry(userId, payload) {
     return entry;
   }
 
-  if (!client) {
-    throw new Error('La base de datos no está disponible. Inténtalo de nuevo.');
-  }
-
-  const result = await client.query(
+  const result = await queryDatabase(
     `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
