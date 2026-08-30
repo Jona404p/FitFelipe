@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Client } = require('pg');
+const { Pool } = require('pg');
 const path = require('path');
 require('dotenv').config();
 
@@ -31,17 +31,18 @@ async function connectDatabase() {
 
   if (!pgClient) {
     try {
-      pgClient = new Client({
+      pgClient = new Pool({
         connectionString: databaseUrl,
-        ssl: { rejectUnauthorized: false }
+        ssl: { rejectUnauthorized: false },
+        max: 2,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000
       });
 
       pgClient.on('error', (error) => {
-        console.warn('[DB] Conexión PostgreSQL terminada:', error.message);
-        pgClient = null;
+        console.warn('[DB] Error en el pool PostgreSQL:', error.message);
       });
 
-      await pgClient.connect();
       await pgClient.query('CREATE EXTENSION IF NOT EXISTS pgcrypto;');
       await pgClient.query(`
         CREATE TABLE IF NOT EXISTS users (
@@ -75,9 +76,7 @@ async function connectDatabase() {
       `);
     } catch (error) {
       console.warn('[DB] No se pudo conectar a PostgreSQL, usando modo demo:', error.message);
-      if (pgClient) {
-        try { await pgClient.end(); } catch (cleanupError) { /* noop */ }
-      }
+      if (pgClient) await pgClient.end().catch(() => {});
       pgClient = null;
       return null;
     }

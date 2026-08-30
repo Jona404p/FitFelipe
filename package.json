@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "build:css": "tailwindcss -i ./tailwind.input.css -o ./tailwind.css --minify",
+    "build": "npm run build:css"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -14,5 +16,8 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.16.1"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
   }
 }
