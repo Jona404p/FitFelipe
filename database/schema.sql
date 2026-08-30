@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS diary_entries (
   food TEXT NOT NULL,
   kcal_consumed INTEGER NOT NULL,
   minutes_walked INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS user_profiles (

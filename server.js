@@ -428,21 +428,58 @@ async function addDiaryEntry(userId, payload) {
     return entry;
   }
 
-  const result = await queryDatabase(
-    `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
-    [userId, date, food, Number(kcalConsumed), Number(minutes) || 0]
-  );
+  try {
+    const result = await queryDatabase(
+      `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id, date) DO UPDATE
+       SET food = EXCLUDED.food,
+           kcal_consumed = EXCLUDED.kcal_consumed,
+           minutes_walked = EXCLUDED.minutes_walked
+       RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
+      [userId, date, food, Number(kcalConsumed), Number(minutes) || 0]
+    );
 
-  const row = result.rows[0];
-  return {
-    id: row.id,
-    date: row.date,
-    food: row.food,
-    kcalConsumed: Number(row.kcalConsumed),
-    minutes: Number(row.minutes)
-  };
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      date: row.date,
+      food: row.food,
+      kcalConsumed: Number(row.kcalConsumed),
+      minutes: Number(row.minutes)
+    };
+  } catch (error) {
+    if (error.code === '23505' || /duplicate key|user_id.*date/i.test(error.message || '')) {
+      const existingResult = await client.query(
+        `SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"
+         FROM diary_entries
+         WHERE user_id = $1 AND date = $2`,
+        [userId, date]
+      );
+
+      if (existingResult.rowCount > 0) {
+        const row = existingResult.rows[0];
+        const updated = await client.query(
+          `UPDATE diary_entries
+           SET food = $3, kcal_consumed = $4, minutes_walked = $5
+           WHERE user_id = $1 AND date = $2
+           RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
+          [userId, date, food, Number(kcalConsumed), Number(minutes) || 0]
+        );
+
+        const updatedRow = updated.rows[0];
+        return {
+          id: updatedRow.id,
+          date: updatedRow.date,
+          food: updatedRow.food,
+          kcalConsumed: Number(updatedRow.kcalConsumed),
+          minutes: Number(updatedRow.minutes)
+        };
+      }
+    }
+
+    throw error;
+  }
 }
 
 async function updateDiaryEntry(userId, entryId, payload) {
