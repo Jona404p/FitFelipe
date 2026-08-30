@@ -13,6 +13,7 @@ const databaseUrl = process.env.DATABASE_URL;
 
 const demoUsers = [];
 const demoDiary = {};
+const demoProfiles = {};
 
 app.use(cors({
   origin: true,
@@ -52,6 +53,17 @@ async function connectDatabase() {
         kcal_consumed INTEGER NOT NULL,
         minutes_walked INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        weight_kg NUMERIC(5,1) NOT NULL DEFAULT 90,
+        height_cm NUMERIC(5,1) NOT NULL DEFAULT 170,
+        age_years INTEGER NOT NULL DEFAULT 26,
+        sex TEXT NOT NULL DEFAULT 'H',
+        activity_factor NUMERIC(4,3) NOT NULL DEFAULT 1.2,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
   }
@@ -177,6 +189,101 @@ async function createUser({ name, email, password }) {
     }
     throw new Error(`Error al crear la cuenta: ${error.message}`);
   }
+}
+
+async function getUserProfile(userId) {
+  const client = await connectDatabase();
+
+  if (!client) {
+    if (!demoProfiles[userId]) {
+      demoProfiles[userId] = {
+        user_id: userId,
+        weight_kg: 90,
+        height_cm: 170,
+        age_years: 26,
+        sex: 'H',
+        activity_factor: 1.2,
+        updated_at: new Date().toISOString()
+      };
+    }
+
+    return demoProfiles[userId];
+  }
+
+  const result = await client.query(
+    `SELECT weight_kg, height_cm, age_years, sex, activity_factor
+     FROM user_profiles
+     WHERE user_id = $1`,
+    [userId]
+  );
+
+  if (result.rowCount > 0) {
+    return result.rows[0];
+  }
+
+  const defaultProfile = {
+    user_id: userId,
+    weight_kg: 90,
+    height_cm: 170,
+    age_years: 26,
+    sex: 'H',
+    activity_factor: 1.2,
+    updated_at: new Date().toISOString()
+  };
+
+  const inserted = await client.query(
+    `INSERT INTO user_profiles (user_id, weight_kg, height_cm, age_years, sex, activity_factor)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING weight_kg, height_cm, age_years, sex, activity_factor`,
+    [userId, defaultProfile.weight_kg, defaultProfile.height_cm, defaultProfile.age_years, defaultProfile.sex, defaultProfile.activity_factor]
+  );
+
+  return inserted.rows[0];
+}
+
+async function saveUserProfile(userId, payload = {}) {
+  const weight = Number(payload.weight_kg ?? 90);
+  const height = Number(payload.height_cm ?? 170);
+  const age = Number(payload.age_years ?? 26);
+  const sex = payload.sex === 'M' ? 'M' : 'H';
+  const activity = Number(payload.activity_factor ?? 1.2);
+
+  if (!Number.isFinite(weight) || !Number.isFinite(height) || !Number.isFinite(age) || !Number.isFinite(activity)) {
+    throw new Error('Datos del perfil inválidos');
+  }
+
+  const client = await connectDatabase();
+
+  if (!client) {
+    demoProfiles[userId] = {
+      user_id: userId,
+      weight_kg: weight,
+      height_cm: height,
+      age_years: age,
+      sex,
+      activity_factor: activity,
+      updated_at: new Date().toISOString()
+    };
+
+    return demoProfiles[userId];
+  }
+
+  const result = await client.query(
+    `INSERT INTO user_profiles (user_id, weight_kg, height_cm, age_years, sex, activity_factor)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (user_id)
+     DO UPDATE SET
+       weight_kg = EXCLUDED.weight_kg,
+       height_cm = EXCLUDED.height_cm,
+       age_years = EXCLUDED.age_years,
+       sex = EXCLUDED.sex,
+       activity_factor = EXCLUDED.activity_factor,
+       updated_at = NOW()
+     RETURNING weight_kg, height_cm, age_years, sex, activity_factor`,
+    [userId, weight, height, age, sex, activity]
+  );
+
+  return result.rows[0];
 }
 
 async function getDiaryByUser(userId) {
@@ -416,6 +523,24 @@ app.get('/api/me', authMiddleware, async (req, res) => {
     res.json({ user: result.rows[0] });
   } catch (error) {
     res.status(500).json({ message: 'Error al cargar perfil', error: error.message });
+  }
+});
+
+app.get('/api/profile', authMiddleware, async (req, res) => {
+  try {
+    const profile = await getUserProfile(req.user.sub);
+    return res.json({ profile });
+  } catch (error) {
+    return res.status(500).json({ message: 'No se pudo cargar el perfil', error: error.message });
+  }
+});
+
+app.put('/api/profile', authMiddleware, async (req, res) => {
+  try {
+    const profile = await saveUserProfile(req.user.sub, req.body || {});
+    return res.json({ profile });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'No se pudo guardar el perfil' });
   }
 });
 

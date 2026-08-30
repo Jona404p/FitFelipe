@@ -622,6 +622,61 @@
             return payload;
         }
 
+        async function loadUserProfile() {
+            try {
+                const data = await apiFetch('/api/profile');
+                const profile = data.profile || null;
+
+                if (!profile) return;
+
+                const weight = Number(profile.weight_kg ?? 90);
+                const height = Number(profile.height_cm ?? 170);
+                const age = Number(profile.age_years ?? 26);
+                const activity = Number(profile.activity_factor ?? 1.2);
+                const sex = profile.sex === 'M' ? 'M' : 'H';
+
+                document.getElementById('inputWeight').value = weight;
+                document.getElementById('inputHeight').value = height;
+                document.getElementById('inputAge').value = age;
+                document.getElementById('inputActivity').value = String(activity);
+
+                const maleRadio = document.querySelector('input[name="userSex"][value="H"]');
+                const femaleRadio = document.querySelector('input[name="userSex"][value="M"]');
+
+                if (maleRadio) maleRadio.checked = sex === 'H';
+                if (femaleRadio) femaleRadio.checked = sex === 'M';
+
+                state.weight = weight;
+                state.height = height;
+                state.age = age;
+                state.activity = activity;
+                state.sex = sex;
+
+                recalculateAll();
+            } catch (error) {
+                console.warn('No se pudo cargar el perfil del usuario:', error.message);
+            }
+        }
+
+        async function saveUserProfile() {
+            try {
+                const payload = {
+                    weight_kg: Number(document.getElementById('inputWeight').value || 90),
+                    height_cm: Number(document.getElementById('inputHeight').value || 170),
+                    age_years: Number(document.getElementById('inputAge').value || 26),
+                    sex: document.querySelector('input[name="userSex"]:checked')?.value || 'H',
+                    activity_factor: Number(document.getElementById('inputActivity').value || 1.2)
+                };
+
+                await apiFetch('/api/profile', {
+                    method: 'PUT',
+                    body: JSON.stringify(payload)
+                });
+            } catch (error) {
+                console.error('Error guardando perfil:', error.message);
+            }
+        }
+
         async function loadSession() {
             const token = getAuthToken();
             if (!token) {
@@ -633,6 +688,7 @@
                 const me = await apiFetch('/api/me');
                 currentUser = me.user;
                 await loadDiaryFromApi();
+                await loadUserProfile();
                 showAppScreen();
             } catch (error) {
                 saveAuthToken('');
@@ -650,6 +706,7 @@
             saveAuthToken(response.token);
             currentUser = response.user;
             await loadDiaryFromApi();
+            await loadUserProfile();
             showAppScreen();
         }
 
@@ -663,6 +720,7 @@
             currentUser = response.user;
             state.diary = [];
             renderDiaryTable();
+            await loadUserProfile();
             showAppScreen();
         }
 
@@ -685,6 +743,12 @@
             saveAuthToken('');
             currentUser = null;
             state.diary = [];
+            document.getElementById('inputWeight').value = 90;
+            document.getElementById('inputHeight').value = 170;
+            document.getElementById('inputAge').value = 26;
+            document.getElementById('inputActivity').value = '1.2';
+            document.querySelector('input[name="userSex"][value="H"]').checked = true;
+            recalculateAll();
             showAuthScreen();
             setAuthTab('login');
         }
@@ -692,6 +756,33 @@
         function wireAuthForms() {
             document.getElementById('authLoginTab').addEventListener('click', () => setAuthTab('login'));
             document.getElementById('authRegisterTab').addEventListener('click', () => setAuthTab('register'));
+
+            document.getElementById('inputWeight').addEventListener('input', () => {
+                recalculateAll();
+                saveUserProfile();
+            });
+
+            document.getElementById('inputHeight').addEventListener('input', () => {
+                recalculateAll();
+                saveUserProfile();
+            });
+
+            document.getElementById('inputAge').addEventListener('input', () => {
+                recalculateAll();
+                saveUserProfile();
+            });
+
+            document.getElementById('inputActivity').addEventListener('change', () => {
+                recalculateAll();
+                saveUserProfile();
+            });
+
+            document.querySelectorAll('input[name="userSex"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    recalculateAll();
+                    saveUserProfile();
+                });
+            });
 
             document.getElementById('loginForm').addEventListener('submit', async (event) => {
                 event.preventDefault();
