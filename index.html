@@ -624,7 +624,9 @@
             }
 
             if (!response.ok) {
-                throw new Error(payload.message || 'Error de la API');
+                const error = new Error(payload.message || 'Error de la API');
+                error.status = response.status;
+                throw error;
             }
 
             return payload;
@@ -1153,10 +1155,21 @@
 
         async function handleAddNewDay(e) {
             e.preventDefault();
+            const form = e.currentTarget;
+            const saveButton = document.getElementById('saveDayBtn');
+
+            if (form.dataset.submitting === 'true') return;
+            if (!form.reportValidity()) return;
+
             const date = String(document.getElementById('formDate').value || '').trim();
             const food = String(document.getElementById('formFood').value || '').trim();
             const kcal = Number.parseFloat(document.getElementById('formKcal').value);
             const minutes = Number.parseFloat(document.getElementById('formMinutes').value);
+
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+                alert('Selecciona una fecha válida.');
+                return;
+            }
 
             if (!date || !food) {
                 alert('La fecha y la comida son obligatorias.');
@@ -1174,11 +1187,17 @@
             }
 
             try {
+                form.dataset.submitting = 'true';
+                saveButton.disabled = true;
+                saveButton.classList.add('opacity-60', 'cursor-wait');
+                saveButton.dataset.originalText = saveButton.innerHTML;
+                saveButton.textContent = 'Guardando...';
+
                 const payload = {
                     date,
                     food,
-                    kcalConsumed: kcal,
-                    minutes: Number.isFinite(minutes) ? minutes : 0
+                    kcalConsumed: Math.round(kcal),
+                    minutes: Math.round(minutes)
                 };
 
                 if (state.editingDiaryId) {
@@ -1200,7 +1219,16 @@
                 resetDiaryForm();
                 renderDiaryTable();
             } catch (error) {
-                alert(error.message);
+                alert(error.status === 503
+                    ? 'El servidor no pudo guardar el registro. Comprueba la conexión e inténtalo de nuevo.'
+                    : error.message);
+            } finally {
+                form.dataset.submitting = 'false';
+                if (saveButton.textContent === 'Guardando...') {
+                    saveButton.innerHTML = saveButton.dataset.originalText || 'Guardar Día';
+                }
+                saveButton.disabled = false;
+                saveButton.classList.remove('opacity-60', 'cursor-wait');
             }
         }
 

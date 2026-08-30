@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fitfelipe-v2';
+const CACHE_NAME = 'fitfelipe-v3';
 const urlsToCache = [
   '/',
   '/index.html',

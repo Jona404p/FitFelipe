@@ -390,6 +390,10 @@ async function addDiaryEntry(userId, payload) {
     return entry;
   }
 
+  if (!client) {
+    throw new Error('La base de datos no está disponible. Inténtalo de nuevo.');
+  }
+
   const result = await client.query(
     `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
      VALUES ($1, $2, $3, $4, $5)
@@ -625,7 +629,12 @@ app.post('/api/diary', authMiddleware, async (req, res) => {
     const entry = await addDiaryEntry(req.user.sub, req.body || {});
     return res.status(201).json(entry);
   } catch (error) {
-    return res.status(400).json({ message: error.message || 'No se pudo guardar el día' });
+    const isValidationError = error.message?.includes('deben ser válidas')
+      || error.message?.includes('deben ser un número')
+      || error.message?.includes('formato YYYY-MM-DD');
+    const status = isValidationError ? 400 : 503;
+    console.error('[DIARIO ERROR]', error.message);
+    return res.status(status).json({ message: error.message || 'No se pudo guardar el día' });
   }
 });
 
@@ -645,6 +654,11 @@ app.delete('/api/diary/:id', authMiddleware, async (req, res) => {
   } catch (error) {
     return res.status(500).json({ message: 'No se pudo eliminar el registro', error: error.message });
   }
+});
+
+app.get('/service-worker.js', (req, res) => {
+  res.type('application/javascript');
+  res.sendFile(path.join(__dirname, 'service-worker.js'));
 });
 
 app.get('*', (req, res) => {
