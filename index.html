@@ -607,13 +607,21 @@
             const response = await fetch(url, {
                 ...options,
                 headers: {
-                    'Content-Type': 'application/json',
+                    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
                     ...headers
                 }
             });
 
             const text = await response.text();
-            const payload = text ? JSON.parse(text) : {};
+            let payload = {};
+
+            if (text) {
+                try {
+                    payload = JSON.parse(text);
+                } catch (error) {
+                    payload = { message: text || 'Respuesta inválida del servidor' };
+                }
+            }
 
             if (!response.ok) {
                 throw new Error(payload.message || 'Error de la API');
@@ -1145,17 +1153,33 @@
 
         async function handleAddNewDay(e) {
             e.preventDefault();
-            const date = document.getElementById('formDate').value;
-            const food = document.getElementById('formFood').value.trim();
-            const kcal = parseFloat(document.getElementById('formKcal').value) || 0;
-            const minutes = parseFloat(document.getElementById('formMinutes').value) || 0;
+            const date = String(document.getElementById('formDate').value || '').trim();
+            const food = String(document.getElementById('formFood').value || '').trim();
+            const kcal = Number.parseFloat(document.getElementById('formKcal').value);
+            const minutes = Number.parseFloat(document.getElementById('formMinutes').value);
 
-            if (!date || !food || kcal <= 0) {
+            if (!date || !food) {
+                alert('La fecha y la comida son obligatorias.');
+                return;
+            }
+
+            if (!Number.isFinite(kcal) || kcal <= 0) {
+                alert('Las calorías deben ser un número válido mayor que 0.');
+                return;
+            }
+
+            if (!Number.isFinite(minutes) || minutes < 0) {
+                alert('Los minutos deben ser un número válido mayor o igual que 0.');
                 return;
             }
 
             try {
-                const payload = { date, food, kcalConsumed: kcal, minutes };
+                const payload = {
+                    date,
+                    food,
+                    kcalConsumed: kcal,
+                    minutes: Number.isFinite(minutes) ? minutes : 0
+                };
 
                 if (state.editingDiaryId) {
                     const updatedEntry = await apiFetch(`/api/diary/${state.editingDiaryId}`, {

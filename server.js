@@ -30,42 +30,52 @@ async function connectDatabase() {
   }
 
   if (!pgClient) {
-    pgClient = new Client({
-      connectionString: databaseUrl,
-      ssl: { rejectUnauthorized: false }
-    });
+    try {
+      pgClient = new Client({
+        connectionString: databaseUrl,
+        ssl: { rejectUnauthorized: false }
+      });
 
-    await pgClient.connect();
-    await pgClient.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
+      await pgClient.connect();
+      await pgClient.query('CREATE EXTENSION IF NOT EXISTS pgcrypto;');
+      await pgClient.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          name TEXT NOT NULL,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
 
-      CREATE TABLE IF NOT EXISTS diary_entries (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        date DATE NOT NULL,
-        food TEXT NOT NULL,
-        kcal_consumed INTEGER NOT NULL,
-        minutes_walked INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
+        CREATE TABLE IF NOT EXISTS diary_entries (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          date DATE NOT NULL,
+          food TEXT NOT NULL,
+          kcal_consumed INTEGER NOT NULL,
+          minutes_walked INTEGER NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
 
-      CREATE TABLE IF NOT EXISTS user_profiles (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-        weight_kg NUMERIC(5,1) NOT NULL DEFAULT 90,
-        height_cm NUMERIC(5,1) NOT NULL DEFAULT 170,
-        age_years INTEGER NOT NULL DEFAULT 26,
-        sex TEXT NOT NULL DEFAULT 'H',
-        activity_factor NUMERIC(4,3) NOT NULL DEFAULT 1.2,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+        CREATE TABLE IF NOT EXISTS user_profiles (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+          weight_kg NUMERIC(5,1) NOT NULL DEFAULT 90,
+          height_cm NUMERIC(5,1) NOT NULL DEFAULT 170,
+          age_years INTEGER NOT NULL DEFAULT 26,
+          sex TEXT NOT NULL DEFAULT 'H',
+          activity_factor NUMERIC(4,3) NOT NULL DEFAULT 1.2,
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+    } catch (error) {
+      console.warn('[DB] No se pudo conectar a PostgreSQL, usando modo demo:', error.message);
+      if (pgClient) {
+        try { await pgClient.end(); } catch (cleanupError) { /* noop */ }
+      }
+      pgClient = null;
+      return null;
+    }
   }
 
   return pgClient;
@@ -310,19 +320,52 @@ async function getDiaryByUser(userId) {
   }));
 }
 
+function normalizeDiaryPayload(payload = {}) {
+  const rawDate = String(payload.date ?? '').trim();
+  const rawFood = String(payload.food ?? '').trim();
+  const kcalConsumed = Number(payload.kcalConsumed);
+  const minutes = Number(payload.minutes ?? 0);
+
+  let date = rawDate;
+  if (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    date = rawDate;
+  } else if (rawDate) {
+    const parsed = new Date(rawDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      date = parsed.toISOString().slice(0, 10);
+    }
+  }
+
+  return {
+    date,
+    food: rawFood,
+    kcalConsumed,
+    minutes: Number.isFinite(minutes) ? minutes : 0
+  };
+}
+
 async function addDiaryEntry(userId, payload) {
   const client = await connectDatabase();
-  const { date, food, kcalConsumed, minutes } = payload;
+  const normalized = normalizeDiaryPayload(payload);
+  const { date, food, kcalConsumed, minutes } = normalized;
 
-  if (!date || !food || Number(kcalConsumed) < 0 || Number(minutes) < 0) {
-    throw new Error('La fecha, comida y calorías son requeridas');
+  if (!date || !food || !Number.isFinite(kcalConsumed) || kcalConsumed <= 0) {
+    throw new Error('La fecha, comida y calorías deben ser válidas');
+  }
+
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    throw new Error('Los minutos deben ser un número válido mayor o igual que 0');
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('La fecha debe tener formato YYYY-MM-DD');
   }
 
   if (!client) {
     const entry = {
       id: `demo-entry-${Date.now()}`,
-      date: String(date),
-      food: String(food),
+      date,
+      food,
       kcalConsumed: Number(kcalConsumed),
       minutes: Number(minutes) || 0
     };
@@ -336,7 +379,7 @@ async function addDiaryEntry(userId, payload) {
     `INSERT INTO diary_entries (user_id, date, food, kcal_consumed, minutes_walked)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
-    [userId, String(date), String(food), Number(kcalConsumed), Number(minutes) || 0]
+    [userId, date, food, Number(kcalConsumed), Number(minutes) || 0]
   );
 
   const row = result.rows[0];
@@ -351,10 +394,19 @@ async function addDiaryEntry(userId, payload) {
 
 async function updateDiaryEntry(userId, entryId, payload) {
   const client = await connectDatabase();
-  const { date, food, kcalConsumed, minutes } = payload || {};
+  const normalized = normalizeDiaryPayload(payload || {});
+  const { date, food, kcalConsumed, minutes } = normalized;
 
-  if (!date || !food || Number(kcalConsumed) < 0 || Number(minutes) < 0) {
-    throw new Error('La fecha, comida y calorías son requeridas');
+  if (!date || !food || !Number.isFinite(kcalConsumed) || kcalConsumed <= 0) {
+    throw new Error('La fecha, comida y calorías deben ser válidas');
+  }
+
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    throw new Error('Los minutos deben ser un número válido mayor o igual que 0');
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('La fecha debe tener formato YYYY-MM-DD');
   }
 
   if (!client) {
@@ -367,8 +419,8 @@ async function updateDiaryEntry(userId, entryId, payload) {
 
     diary[index] = {
       ...diary[index],
-      date: String(date),
-      food: String(food),
+      date,
+      food,
       kcalConsumed: Number(kcalConsumed),
       minutes: Number(minutes) || 0
     };
@@ -382,7 +434,7 @@ async function updateDiaryEntry(userId, entryId, payload) {
      SET date = $1, food = $2, kcal_consumed = $3, minutes_walked = $4
      WHERE id = $5 AND user_id = $6
      RETURNING id, TO_CHAR(date, 'YYYY-MM-DD') AS date, food, kcal_consumed AS "kcalConsumed", minutes_walked AS "minutes"`,
-    [String(date), String(food), Number(kcalConsumed), Number(minutes) || 0, entryId, userId]
+    [date, food, Number(kcalConsumed), Number(minutes) || 0, entryId, userId]
   );
 
   if (result.rowCount === 0) {
@@ -584,7 +636,22 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`FitFelipe ready on http://localhost:${PORT}`);
-  console.log(`Base de datos: ${databaseUrl ? 'Neon/Postgres configured' : 'demo mode (fallback local)'}`);
-});
+function startServer(port) {
+  const server = app.listen(port, () => {
+    console.log(`FitFelipe ready on http://localhost:${port}`);
+    console.log(`Base de datos: ${databaseUrl ? 'Neon/Postgres configured' : 'demo mode (fallback local)'}`);
+  });
+
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      const fallbackPort = port + 1;
+      console.warn(`Puerto ${port} ocupado, intentando ${fallbackPort} en su lugar.`);
+      startServer(fallbackPort);
+      return;
+    }
+
+    throw error;
+  });
+}
+
+startServer(PORT);
